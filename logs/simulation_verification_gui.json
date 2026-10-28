@@ -1,0 +1,43 @@
+{
+  "status": "passed",
+  "purpose": "simulation, voxel perception, policy inference and checkpoint reload",
+  "checkpoint": "/home/zhouwei/Documents/g1_gllant/runs/wandb/offline-run-20261028_152320-hoj3jo8r/files/checkpoint_final.pt",
+  "steps": 120,
+  "num_envs": 1,
+  "simulation_seconds_per_env": 2.4,
+  "observation_shapes": {
+    "policy": [
+      1,
+      504
+    ],
+    "grid_map_": [
+      1,
+      40,
+      32,
+      32
+    ]
+  },
+  "action_shape": [
+    1,
+    29
+  ],
+  "max_occupied_voxels": 1551,
+  "episode_resets": 2,
+  "reward_sum": -4.983600418257993,
+  "navigation_policy_trained_to_convergence": false,
+  "snapshot": "/home/zhouwei/Documents/g1_gllant/logs/simulation_preview.png",
+  "target_pos_w": [
+    [
+      -40.0,
+      -76.34916687011719,
+      0.8500000238418579
+    ]
+  ],
+  "root_pos_w": [
+    [
+      -35.98794174194336,
+      -76.0047836303711,
+      0.7756050825119019
+    ]
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "Gallant": {
+    "url": "https://github.com/InternRobotics/Gallant.git",
+    "commit": "6289699012f631b1d770fee6552e69667bad3367"
+  },
+  "active-adaptation": {
+    "url": "https://github.com/btx0424/active-adaptation.git",
+    "commit": "c0d6f5aa6146814803090b5f6f19aafb8ce6f792"
+  }
+}

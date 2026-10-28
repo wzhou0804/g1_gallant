@@ -1,0 +1,16 @@
+.venv/
+.python311/
+.cache/
+vendor/
+outputs/
+outputs_play/
+runs/
+logs/*
+!logs/training_verification.json
+!logs/simulation_verification.json
+!logs/simulation_verification_gui.json
+!logs/simulation_preview.png
+checkpoints/*
+!checkpoints/smoke_final.pt
+__pycache__/
+*.py[cod]

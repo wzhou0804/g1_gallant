@@ -1,0 +1,437 @@
+diff --git a/cfg/task/G1LidarNew.yaml b/cfg/task/G1LidarNew.yaml
+index 8b3bb7c..ba48896 100644
+--- a/cfg/task/G1LidarNew.yaml
++++ b/cfg/task/G1LidarNew.yaml
+@@ -152,13 +152,11 @@ randomization:
+     static_friction_range: [0.5, 2.0]
+     dynamic_friction_range: [0.5, 2.0]
+     restitution_range: [0.05, 0.4]
+-  motor_params_armature:
++  motor_params:
+     stiffness_range:
+       .*: [0.8, 1.2]
+     damping_range:
+       .*: [0.8, 1.2]
+-    armature_range:
+-      .*: [1.0, 1.0]
+   reset_joint_states_uniform:
+     pos_ranges:
+       .*: [-0.1, 0.1]
+@@ -166,8 +164,7 @@ randomization:
+       .*: [-0.1, 0.1]
+     rel: true
+   perturb_body_com:
+-    body_names: ["torso_link"]
+-    pos_range: [-0.05, 0.05]
++    torso_link: [-0.05, 0.05]
+ termination:
+   force_contact:
+     body_names: 
+@@ -178,4 +175,4 @@ termination:
+   gallant.pillar_fall: {body_names: ".*ankle_roll_link", threshold: -0.1}
+   gallant.no_moving: {thres: 1.0}
+   gallant.feet_too_close: {body_names: ".*ankle_roll_link", thres: 0.05}
+-  fall_over: {xy_thres: 0.8}
+\ No newline at end of file
++  fall_over: {xy_thres: 0.8}
+diff --git a/src/gallant/command.py b/src/gallant/command.py
+index 644df31..e92d1ab 100644
+--- a/src/gallant/command.py
++++ b/src/gallant/command.py
+@@ -158,6 +158,9 @@ class LocoNavigation(Command):
+             self.terrain_importer: BetterTerrainImporter = self.env.scene.terrain
+             self.terrain_generator: BetterTerrainGenerator = self.terrain_importer.terrain_generator
+ 
++            if self.terrain_importer.cfg.terrain_type == "generator":
++                self._origins = self.terrain_importer.env_origins.clone()
++
+             if self.use_curriculum and self.terrain_importer.cfg.terrain_type == "generator":
+                 assert self.terrain_generator.cfg.curriculum, "Curriculum must be enabled in the terrain generator."
+             if self.terrain_importer.cfg.terrain_type == "usd":
+diff --git a/src/gallant/observation.py b/src/gallant/observation.py
+index ad1ad29..2b70f21 100644
+--- a/src/gallant/observation.py
++++ b/src/gallant/observation.py
+@@ -406,7 +406,7 @@ class lidar_voxel_map(Observation):
+         if self.force_full_scan.any():
+             should_update_scan |= self.force_full_scan.unsqueeze(1)
+         enabled = should_update_scan.flatten(0, 1)  # [E*2]
+-        hit_positions, hit_distances = self.raycaster.raycast_fused(
++        hit_positions, hit_distances, _ = self.raycaster.raycast_fused(
+             mesh_pos_w=mesh_pos_w.repeat_interleave(2, dim=0),
+             mesh_quat_w=mesh_quat_w.repeat_interleave(2, dim=0),
+             ray_starts_w=ray_starts_w.flatten(0, 1),
+@@ -486,4 +486,4 @@ class lidar_voxel_map(Observation):
+         return sym_utils.SymmetryTransform(
+             perm=torch.arange(self.shape[1]).flip(0),
+             signs=torch.ones(self.shape[1]),
+-        )
+\ No newline at end of file
++        )
+diff --git a/src/gallant/reward.py b/src/gallant/reward.py
+index 2a73d43..103f260 100644
+--- a/src/gallant/reward.py
++++ b/src/gallant/reward.py
+@@ -43,7 +43,7 @@ class torques_scaled(Reward):
+         super().__init__(env, weight, enabled)
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         torques = self.asset.data.applied_torque / self.asset.data.joint_stiffness
+         rew = torques.square().sum(1)
+         return -rew.reshape(self.num_envs, 1)
+@@ -56,7 +56,7 @@ class feet_stumble(Reward):
+         self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
+         self.body_ids, self.body_names = self.contact_sensor.find_bodies(body_names)
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         contact_forces = self.contact_sensor.data.net_forces_w[:, self.body_ids, :]
+         force_xy = torch.norm(contact_forces[:, :, :2], dim=-1)
+         force_z = torch.abs(contact_forces[:, :, 2])
+@@ -80,7 +80,7 @@ class angvel_xy_l2_torso(Reward):
+         )
+         self.angvel = angvel
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         r = -self.angvel[:, :, :2].square().sum(-1).mean(1)
+         return r.reshape(self.num_envs, 1)
+ 
+@@ -93,7 +93,7 @@ class feet_contact_forces(Reward):
+         self.body_ids, self.body_names = self.contact_sensor.find_bodies(body_names)
+         self.max_contact_force = max_contact_force
+     
+-    def compute(self):
++    def _compute(self):
+         contact_forces = self.contact_sensor.data.net_forces_w[:, self.body_ids, :].norm(dim=-1)
+         rew = -torch.sum(contact_forces - self.max_contact_force, dim=1, keepdim=True).clamp_min(0.0)
+         # scale_env_ids = ((self.command_manager.raw_terrain_types == terrain_dict["platform"]) | (self.command_manager.raw_terrain_types == terrain_dict["ceil"])).nonzero().squeeze()
+@@ -112,7 +112,7 @@ class feet_ground_parallel_bin(Reward): # how many points are on the ground when
+         self.threshold = threshold
+         self.thres = self.env.step_dt * 3
+ 
+-    def compute(self):
++    def _compute(self):
+         feet_fwd_vec = quat_rotate(
+             self.asset.data.body_quat_w[:, self.body_ids_a],
+             torch.tensor([1., 0., 0.], device=self.device).expand(self.num_envs, 2, 3)
+@@ -152,7 +152,7 @@ class penalty_fast_ang_vel(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.threshold = threshold
+ 
+-    def compute(self):
++    def _compute(self):
+         ang_vel = torch.abs(self.asset.data.root_ang_vel_b[:, 2])
+         return -(ang_vel - self.threshold).clamp_min(0.0).reshape(self.num_envs, 1)
+ 
+@@ -243,7 +243,7 @@ class contact_momentum(Reward):
+         self.sensor_ids, self.sensor_names = self.contact_sensor.find_bodies(body_names)
+         self.body_ids = self.asset.find_bodies(body_names)[0]
+ 
+-    def compute(self):
++    def _compute(self):
+         contact_forces = self.contact_sensor.data.net_forces_w[:, self.sensor_ids, 2]
+         feet_vel = self.asset.data.body_vel_w[:, self.body_ids, 2]
+         contact_momentum = torch.clip(feet_vel, max=0.0) * torch.clip(contact_forces-50.0, min=0.0)
+@@ -256,7 +256,7 @@ class penalize_contact(Reward):
+         self.contact_sensor: ContactSensor = self.env.scene.sensors["contact_forces"]
+         self.sensor_ids, self.sensor_names = self.contact_sensor.find_bodies(body_names)
+ 
+-    def compute(self):
++    def _compute(self):
+         contact_forces = self.contact_sensor.data.net_forces_w[:, self.sensor_ids, :]
+         contact_forces = contact_forces.norm(dim=-1)
+         # tree_env_id = (self.command_manager.raw_terrain_types == terrain_dict["tree"]).nonzero().squeeze()
+@@ -270,7 +270,7 @@ class action_vanish(Reward):
+         self.action_min = (self.asset.data.joint_pos_limits[:, :, 0] - self.asset.data.default_joint_pos) / self.env.action_manager.action_scaling
+         self.action_max = (self.asset.data.joint_pos_limits[:, :, 1] - self.asset.data.default_joint_pos) / self.env.action_manager.action_scaling
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         action = self.asset.data.applied_action[:, :, 0]
+         upper_error = torch.clip(action - self.action_max, min=0.0)
+         lower_error = torch.clip(-action + self.action_min, min=0.0)
+@@ -282,7 +282,7 @@ class dof_vel(Reward):
+         super().__init__(env, weight, enabled)
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+     
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         dof_vel = self.asset.data.joint_vel
+         # env_ids = self.command_manager.target_reached.nonzero().squeeze(1)
+         # dof_vel[env_ids] *= 100.0
+@@ -295,7 +295,7 @@ class dof_vel_limits(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.dof_vel_limits = self.asset.data.joint_velocity_limits[:, :] * 0.80
+         
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         dof_vel = self.asset.data.joint_vel
+         return -((dof_vel - self.dof_vel_limits).clamp_min(0.0)).sum(1, True)
+ 
+@@ -306,7 +306,7 @@ class torque_limits(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.torque_limits = self.asset.data.joint_effort_limits[:, :] * 0.95
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         torque = self.asset.data.applied_torque
+         return -((torque - self.torque_limits).clamp_min(0.0)).sum(1, True)
+ 
+@@ -317,7 +317,7 @@ class dof_pos_limits(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.soft_joint_pos_limits = self.asset.data.soft_joint_pos_limits
+     
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         joint_pos = self.asset.data.joint_pos
+         violation_min = (joint_pos - self.soft_joint_pos_limits[:, :, 0]).clamp_max(0.0)
+         violation_max = (self.soft_joint_pos_limits[:, :, 1] - joint_pos).clamp_max(0.0)
+@@ -332,7 +332,7 @@ class feet_distance_lateral(Reward):
+         self.least_distance = least_distance    
+         self.most_distance = most_distance
+     
+-    def compute(self):
++    def _compute(self):
+         cur_feetpos_translated = self.asset.data.body_link_pos_w[:, self.body_ids, :] - self.asset.data.root_pos_w.unsqueeze(1)
+         feetpos_in_body_frame = torch.zeros(self.env.num_envs, 2, 3, device=self.env.device)
+         for i in range(2):
+@@ -351,7 +351,7 @@ class knee_distance_lateral(Reward):
+         self.least_distance = least_distance    
+         self.most_distance = most_distance
+     
+-    def compute(self):
++    def _compute(self):
+         cur_feetpos_translated = self.asset.data.body_link_pos_w[:, self.body_ids, :] - self.asset.data.root_pos_w.unsqueeze(1)
+         kneepos_in_body_frame = torch.zeros(self.env.num_envs, 4, 3, device=self.env.device)
+         for i in range(4):
+@@ -375,7 +375,7 @@ class feet_ground_parallel(Reward):
+ 
+         self.thres = self.env.step_dt * 3
+ 
+-    def compute(self):
++    def _compute(self):
+         feet_fwd_vec = quat_rotate(
+             self.asset.data.body_quat_w[:, self.body_ids_a],
+             torch.tensor([1., 0., 0.], device=self.device).expand(self.num_envs, 2, 3)
+@@ -408,7 +408,7 @@ class feet_parallel(Reward):
+         self.body_ids = self.asset.find_bodies(body_names)[0]
+         assert len(self.body_ids) == 2
+ 
+-    def compute(self):
++    def _compute(self):
+         self.feet_fwd_vec = quat_rotate(
+             yaw_quat(self.asset.data.body_quat_w[:, self.body_ids]),
+             torch.tensor([1., 0., 0.], device=self.device).expand(self.num_envs, 2, 3)
+@@ -431,7 +431,7 @@ class feet_clearance_simple(Reward):
+         self.body_ids = self.asset.find_bodies(body_names)[0]
+         self.target_height = 0.08
+     
+-    def compute(self):
++    def _compute(self):
+         feet_pos_w = self.asset.data.body_pos_w[:, self.body_ids]
+         feet_vel_w = self.asset.data.body_vel_w[:, self.body_ids]
+         feet_speed = torch.norm(feet_vel_w[:, :, :2], dim=2).square()
+@@ -452,7 +452,7 @@ class feet_ground_slip(Reward):
+         self.body_ids, self.body_names = self.contact_sensor.find_bodies(body_names)
+         self.body_ids = torch.tensor(self.body_ids, device=self.env.device)
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         in_contact = (
+             self.contact_sensor.data.current_contact_time[:, self.body_ids] >= 0.02
+         )
+@@ -469,7 +469,7 @@ class waist_deviation_l2(Reward):
+         self.joint_ids = self.asset.find_joints(joint_names)[0]
+         self.default_joint_pos = self.asset.data.default_joint_pos[:, self.joint_ids].clone()
+     
+-    def compute(self):
++    def _compute(self):
+         dev = self.asset.data.joint_pos[:, self.joint_ids] - self.default_joint_pos
+         return -dev.square().sum(1, True)
+ 
+@@ -480,7 +480,7 @@ class orientation_torso(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.body_ids = self.asset.find_bodies(body_names)[0]
+     
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         torso_quat = self.asset.data.body_quat_w[:, self.body_ids].reshape(self.num_envs, 4)
+         projected_gravity = quat_rotate_inverse(
+             torso_quat,
+@@ -499,7 +499,7 @@ class orientation_pelvis(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.body_ids = self.asset.find_bodies(body_names)[0]
+ 
+-    def compute(self) -> torch.Tensor:      
++    def _compute(self) -> torch.Tensor:      
+         pelvis_quat = self.asset.data.body_quat_w[:, self.body_ids].reshape(self.num_envs, 4)
+         projected_gravity = quat_rotate_inverse(
+             pelvis_quat,
+@@ -516,7 +516,7 @@ class linvel_x_exp(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.command_manager = self.env.command_manager
+     
+-    def compute(self):
++    def _compute(self):
+         linvel_x = self.asset.data.root_lin_vel_b[:, 0]
+         error = torch.square(self.command_manager.command_linvel[:, 0] - linvel_x)
+         return torch.exp(-error / 0.25).reshape(self.num_envs, 1)
+@@ -528,7 +528,7 @@ class linvel_y_exp(Reward):
+         self.asset: Articulation = self.env.scene.articulations["robot"]
+         self.command_manager = self.env.command_manager
+     
+-    def compute(self):
++    def _compute(self):
+         linvel_y = self.asset.data.root_lin_vel_b[:, 1]
+         error = torch.square(self.command_manager.command_linvel[:, 1] - linvel_y)
+         return torch.exp(-error / 0.25).reshape(self.num_envs, 1)
+@@ -539,7 +539,7 @@ class velocity_direction(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         g = self.command_manager.pos_diff / (1e-8 + self.command_manager.pos_diff_norm)
+         g[:, 2] = 0.0
+         g = g / (g.norm(dim=-1, keepdim=True) + 1e-8)
+@@ -571,7 +571,7 @@ class velocity_projection(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+     
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         target_direction = normalize(self.command_manager.target_direction[:, :2])
+         velocity = self.asset.data.root_lin_vel_w[:, :2]
+         rew = torch.sum(velocity * target_direction, dim=-1, keepdim=True).clamp_max(1.0)
+@@ -583,7 +583,7 @@ class reach_target_pos(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         Tr = 2
+         diff = (torch.abs(self.command_manager.target_pos_w[:, :2] - self.asset.data.root_pos_w[:, :2]) - 0.2).clip(min=0.)
+         rew = 1 / ((1 + diff.square().sum(dim=-1, keepdim=True)))
+@@ -605,7 +605,7 @@ class feet_clearance_height(Reward[LocoNavigation]):
+         self.feet_pos_w = self.asset.data.body_pos_w[:, self.command_manager.foot_ids, :]
+         self.feet_vel_w = self.asset.data.body_vel_w[:, self.command_manager.foot_ids, :3]
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         target_vec = (self.command_manager.target_pos_w[:, :2] - self.asset.data.root_pos_w[:, :2])
+         quat = yaw_quat(self.asset.data.root_link_quat_w)
+         feetvel_in_body_frame = quat_rotate_inverse(
+@@ -632,7 +632,7 @@ class linvel_z_l2_new(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         linvel_z = self.asset.data.root_lin_vel_w[:, 2]
+         return -linvel_z.square().reshape(self.num_envs, 1)
+ 
+@@ -642,7 +642,7 @@ class reach_target_yaw(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         target_vec = self.command_manager.target_pos_w[:, :2] - self.asset.data.root_pos_w[:, :2]
+         # target_vec = self.command_manager.target_direction[:, :2]
+         target_yaw = torch.atan2(target_vec[:, 1], target_vec[:, 0])
+@@ -665,7 +665,7 @@ class num_foot_contact(Reward[LocoNavigation]):
+         self.asset = self.command_manager.asset
+         self.contact_forces: ContactSensor = self.env.scene.sensors["contact_forces"]
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         force_z = self.contact_forces.data.net_forces_w[:, self.command_manager.contact_foot_ids, 2]
+         contacts = torch.sum(force_z < 0.1, dim=-1).reshape(self.num_envs, 1)# num of no contact
+         single_contacts = contacts == 1
+@@ -678,7 +678,7 @@ class pillar_middle(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         world_pos = self.asset.data.root_pos_w[:, :2]
+         target_pos = self.command_manager.target_pos_w[:, :2]
+         pos_diff = world_pos - target_pos
+@@ -697,7 +697,7 @@ class stall_penalty(Reward[LocoNavigation]):
+         self.min_vel = min_vel
+         self.max_vel = max_vel
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         # vel_min = self.asset.data.root_lin_vel_w[:, :2].norm(dim=-1, keepdim=True) <= 0.4
+         vel_min = self.asset.data.root_lin_vel_w[:, :2].norm(dim=-1, keepdim=True) <= self.min_vel
+         vel_max = self.asset.data.root_lin_vel_w[:, :2].norm(dim=-1, keepdim=True) >= self.max_vel
+@@ -713,7 +713,7 @@ class single_foot_contact_hussar(Reward[LocoNavigation]):
+         self.asset = self.command_manager.asset
+         self.contact_forces: ContactSensor = self.env.scene.sensors["contact_forces"]
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         force_z = self.contact_forces.data.net_forces_w[:, self.command_manager.contact_foot_ids, 2]
+         in_contact = force_z > 0.5 # num of contact
+         single_contact = torch.sum(1.*in_contact, dim=1) == 1
+@@ -729,7 +729,7 @@ class reaching_target(Reward[LocoNavigation]):
+         self.asset = self.command_manager.asset
+         self.award_time = 2.0
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         rew_condition = self.command_manager.time_alloted - self.command_manager.time_elapsed < self.award_time
+         return (self.command_manager.target_reached * rew_condition).reshape(self.num_envs, 1)
+ 
+@@ -739,7 +739,7 @@ class tracking_head_height(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         est_height = self.command_manager.est_height
+         head_height = self.command_manager.head_height
+         error = (head_height - est_height).square()
+@@ -790,7 +790,7 @@ class feet_air_time_hussar(Reward[LocoNavigation]):
+         self.asset = self.command_manager.asset
+         self.contact_forces: ContactSensor = self.env.scene.sensors["contact_forces"]
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         first_contact = self.contact_forces.compute_first_contact(self.env.step_dt)[
+             :, self.command_manager.contact_foot_ids
+         ]
+@@ -804,7 +804,7 @@ class no_reach(Reward[LocoNavigation]):
+         super().__init__(env, weight, enabled)
+         self.asset = self.command_manager.asset
+ 
+-    def compute(self) -> torch.Tensor:
++    def _compute(self) -> torch.Tensor:
+         interval_reached = (self.env.episode_length_buf+1) % self.command_manager.resample_interval == 0
+         penalize = interval_reached & ~self.command_manager.target_reached
+         return -100.0 * penalize.float().reshape(self.num_envs, 1)
+diff --git a/src/gallant_learning/ppo_gallant.py b/src/gallant_learning/ppo_gallant.py
+index ea82df8..7bd9b1f 100644
+--- a/src/gallant_learning/ppo_gallant.py
++++ b/src/gallant_learning/ppo_gallant.py
+@@ -236,7 +236,8 @@ class PPOPolicy(TensorDictModuleBase):
+             in_keys=["loc", "scale"],
+             out_keys=[ACTION_KEY],
+             distribution_class=IndependentNormal,
+-            return_log_prob=True
++            return_log_prob=True,
++            log_prob_key="action_log_prob",
+         ).to(self.device)
+         
+         self.critic = Seq(
+@@ -528,4 +529,4 @@ class PositionEmbedding1D(nn.Module):
+         self.pos_emb = nn.Parameter(pos_emb)
+     
+     def forward(self):
+-        return self.pos_emb
+\ No newline at end of file
++        return self.pos_emb

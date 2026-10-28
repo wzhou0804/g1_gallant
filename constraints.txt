@@ -1,0 +1,13 @@
+isaacsim==5.1.0.0
+isaaclab==2.3.2
+torch==2.7.0+cu128
+torchvision==0.22.0+cu128
+tensordict==0.8.3
+torchrl==0.8.1
+numpy==1.26.0
+warp-lang==1.11.1
+wandb==0.19.11
+mujoco==3.3.2
+click==8.1.7
+typing_extensions==4.12.2
+websockets==12.0

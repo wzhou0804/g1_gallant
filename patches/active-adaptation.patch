@@ -1,0 +1,88 @@
+diff --git a/active_adaptation/__init__.py b/active_adaptation/__init__.py
+index 205368b..da94952 100644
+--- a/active_adaptation/__init__.py
++++ b/active_adaptation/__init__.py
+@@ -25,6 +25,7 @@ Plugins.instance().register(ActiveAdaptationSearchPathPlugin)
+ _BACKEND = None
+ _BACKEND_SET = False
+ _CALLED_AT = None
++_APP_LAUNCHER = None
+ 
+ _LOCAL_RANK = int(os.getenv("LOCAL_RANK", "0"))
+ _WORLD_SIZE = int(os.getenv("WORLD_SIZE", "1"))
+@@ -104,6 +105,7 @@ def init(cfg: DictConfig, auto_rank: bool):
+         auto_rank: Whether to automatically modify `cfg.device` according to the local rank.
+     """
+ 
++    global _APP_LAUNCHER
+     wp.init()
+ 
+     # Store sys.argv to a local file
+@@ -140,8 +142,15 @@ def init(cfg: DictConfig, auto_rank: bool):
+         from isaaclab.app import AppLauncher
+ 
+         app_config = OmegaConf.to_container(cfg.app)
+-        AppLauncher(app_config, distributed=is_distributed(), device=cfg.device)
++        _APP_LAUNCHER = AppLauncher(app_config, distributed=is_distributed(), device=cfg.device)
+ 
+     import_environment_projects()
+ 
+     return cfg
++
++
++def close():
++    """Close the simulator owned by this process."""
++    if _APP_LAUNCHER is not None:
++        # Isaac Sim 5.1 blocks in headless stage teardown on this host.
++        _APP_LAUNCHER.app.close(wait_for_replicator=False, skip_cleanup=True)
+diff --git a/active_adaptation/utils/profiling.py b/active_adaptation/utils/profiling.py
+index 4aa39b6..8bfa8e2 100644
+--- a/active_adaptation/utils/profiling.py
++++ b/active_adaptation/utils/profiling.py
+@@ -57,8 +57,10 @@ class ScopedTimer(_DecoratorContextManager):
+ 
+         # Re-parent if needed so the summary tree reflects current usage.
+         if self.parent is not parent:
+-            if self.parent is not None:
+-                raise ValueError(f"Timer {self.name} already has a parent {self.parent.name}")
++            if self.parent == "root":
++                ScopedTimer._root_nodes.remove(self)
++            elif self.parent is not None:
++                self.parent.children.remove(self)
+             # Attach to new parent or root list.
+             self.parent = parent
+             if parent == "root":
+diff --git a/scripts/play.py b/scripts/play.py
+index 1391edd..733c8ff 100644
+--- a/scripts/play.py
++++ b/scripts/play.py
+@@ -102,6 +102,7 @@ def main(cfg: DictConfig):
+             print(f"Interrupted by user, video saved to: {video_path}" if record_enabled else "Interrupted by user.")
+     
+     env.close()
++    aa.close()
+ 
+ 
+ if __name__ == "__main__":
+diff --git a/scripts/train_ppo.py b/scripts/train_ppo.py
+index f38c81a..7ff1829 100644
+--- a/scripts/train_ppo.py
++++ b/scripts/train_ppo.py
+@@ -43,6 +43,7 @@ def main(cfg: DictConfig):
+ 
+     if aa.is_main_process():
+         run = wandb.init(
++            name=cfg.wandb.name,
+             job_type=cfg.wandb.job_type,
+             project=cfg.wandb.project,
+             mode=cfg.wandb.mode,
+@@ -236,7 +237,8 @@ def main(cfg: DictConfig):
+         run.log(info)
+         wandb.finish()
+         print(f"Final checkpoint: {ckpt_path}")
+-    exit(0)
++    env.close()
++    aa.close()
+ 
+ 
+ if __name__ == "__main__":

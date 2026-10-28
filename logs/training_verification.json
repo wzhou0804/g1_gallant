@@ -1,0 +1,17 @@
+{
+  "status": "passed",
+  "num_envs": 32,
+  "total_frames": 3072,
+  "ppo_updates": 2,
+  "final_eval_steps": 499,
+  "checkpoint": "/home/zhouwei/Documents/g1_gllant/runs/wandb/offline-run-20261028_152320-hoj3jo8r/files/checkpoint_final.pt",
+  "process_exit_code": 0,
+  "finite_checkpoint_tensors": 57,
+  "tensors_changed_since_first_update": 48,
+  "rollout_fps": [
+    905.7992204637799,
+    918.1379489557316
+  ],
+  "policy_trained_to_convergence": false,
+  "log": "/home/zhouwei/Documents/g1_gllant/logs/train-verified.log"
+}
